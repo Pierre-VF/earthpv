@@ -69,28 +69,28 @@ check_file() {
 echo "Checking basic system tools..."
 echo "-------------------------------------------"
 
-check_command "bash" "Bash shell"
-check_command "python3" "Python 3"
-check_command "pip" "Pip package manager"
-check_command "stat" "stat command"
-check_command "df" "df command"
-check_command "nohup" "nohup command"
-check_command "pgrep" "pgrep command"
-check_command "pkill" "pkill command"
-check_command "awk" "awk command"
-check_command "grep" "grep command"
-check_command "sed" "sed command"
+check_command "bash" "Bash shell"|| true
+check_command "python3" "Python 3"|| true
+check_command "pip" "Pip package manager"|| true
+check_command "stat" "stat command"|| true
+check_command "df" "df command"|| true
+check_command "nohup" "nohup command"|| true
+check_command "pgrep" "pgrep command"|| true
+check_command "pkill" "pkill command"|| true
+check_command "awk" "awk command"|| true
+check_command "grep" "grep command"|| true
+check_command "sed" "sed command"|| true
 
 echo ""
 echo "Checking optional GNU tools (recommended)..."
 echo "-------------------------------------------"
 
 # Check for GNU tools (preferred for consistency)
-check_command "gstat" "GNU stat"
-check_command "greadlink" "GNU readlink"
-check_command "ggrep" "GNU grep"
-check_command "gsed" "GNU sed"
-check_command "gawk" "GNU awk"
+check_command "gstat" "GNU stat"|| true
+check_command "greadlink" "GNU readlink"|| true
+check_command "ggrep" "GNU grep"|| true
+check_command "gsed" "GNU sed"|| true
+check_command "gawk" "GNU awk"|| true
 
 echo ""
 echo "Checking Python packages..."
@@ -180,7 +180,7 @@ echo "Checking disk space..."
 echo "-------------------------------------------"
 
 # Check root disk
-ROOT_FREE=$(df -BG / | awk 'NR==2 {print $4}' | tr -dc '0-9')
+ROOT_FREE=$(df -h / | awk 'NR==2 {print $4}' | sed 's/[^0-9.]//g' | cut -d. -f1)
 echo "Free space on /: ${ROOT_FREE}G"
 
 if [ "$ROOT_FREE" -ge 10 ] 2>/dev/null; then
