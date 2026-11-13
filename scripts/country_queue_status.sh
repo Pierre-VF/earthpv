@@ -4,18 +4,35 @@
 #
 #   bash scripts/country_queue_status.sh
 cd "$(dirname "$0")/.."
+
+# Source macOS compatibility layer
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/macos_compat.sh"
+
 Q=data/country_queue_markers
 AOIS="morocco egypt yemen south_africa poland namibia turkiye"
 now=$(date +%s)
 echo "== $(date '+%F %T')  earthpv Morocco/Egypt/Yemen/South Africa status"
 
 echo "-- units"
-systemctl --user list-units --all --no-legend 'earthpv-*' 2>/dev/null \
-  | awk '{printf "   %-40s %s/%s\n", $1, $3, $4}'
-for u in $(for a in $AOIS; do echo earthpv-compose-$a earthpv-$a-compute; done) earthpv-india-compute; do
-  systemctl --user is-active --quiet "$u" && \
-    echo "   $u mem $(systemctl --user show -p MemoryCurrent --value "$u" | awk '{printf "%.1fG", $1/1e9}')"
-done
+if [ "$OS_TYPE" = "linux" ]; then
+  systemctl --user list-units --all --no-legend 'earthpv-*' 2>/dev/null \
+    | awk '{printf "   %-40s %s/%s\n", $1, $3, $4}'
+  for u in $(for a in $AOIS; do echo earthpv-compose-$a earthpv-$a-compute; done) earthpv-india-compute; do
+    if systemctl --user is-active --quiet "$u"; then
+      mem=$(systemctl --user show -p MemoryCurrent --value "$u" 2>/dev/null | awk '{printf "%.1fG", $1/1e9}')
+      echo "   $u mem $mem"
+    fi
+  done
+else
+  # macOS: list active processes matching earthpv patterns
+  echo "   (macOS: process-based status)"
+  for u in $(for a in $AOIS; do echo earthpv-compose-$a earthpv-$a-compute; done) earthpv-india-compute; do
+    if unit_active "$u"; then
+      echo "   $u (active)"
+    fi
+  done
+fi
 
 echo "-- compose"
 for a in $AOIS; do
@@ -48,17 +65,80 @@ done
 [ -f data/.gpu.lock ] && echo "   gpu: $(nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader 2>/dev/null)"
 
 echo "-- inputs"
-for i in MAR EGY YEM ZAF; do echo "   $i VIDA: $( [ -s data/vida/$i.parquet ] && echo ready || echo "downloading ($(wc -l 2>/dev/null < /home/tobi/earthpv_data/$i.parquet.part.done) chunks)")"; done
+for i in MAR EGY YEM ZAF; do 
+  if [ -s data/vida/$i.parquet ]; then
+    echo "   $i VIDA: ready"
+  else
+    # Check for part file
+    part_count=$(wc -l 2>/dev/null < /home/tobi/earthpv_data/$i.parquet.part.done || echo "0")
+    echo "   $i VIDA: downloading ($part_count chunks)"
+  fi
+done
+
 for a in $AOIS; do
   f=data/labels/${a}_overpass_solar.parquet
-  echo "   $a labels: $( [ -s $f ] && echo "ready ($(stat -c %s $f) B)" || echo "pending ($(ls data/labels/.overpass_tiles/${a}_*/ 2>/dev/null | wc -l) tiles cached)")"
+  if [ -s "$f" ]; then
+    # Get file size cross-platform
+    if [ "$OS_TYPE" = "linux" ]; then
+      size=$(stat -c %s "$f" 2>/dev/null || echo "?")
+    else
+      size=$(stat_file_size "$f" 2>/dev/null || echo "?")
+    fi
+    echo "   $a labels: ready ($size B)"
+  else
+    tile_count=$(ls data/labels/.overpass_tiles/${a}_*/ 2>/dev/null | wc -l || echo "0")
+    echo "   $a labels: pending ($tile_count tiles cached)"
+  fi
 done
 
 echo "-- disk / memory / link"
-df -h / /run/media/tobi/aidisc | awk 'NR>1{printf "   %-28s %s free (%s used)\n", $6, $4, $5}'
-free -g | awk '/Mem/{printf "   RAM %sG used of %sG, available %sG\n", $3, $2, $7}'
-IF=wlxb44bd62bd203; r0=$(cat /sys/class/net/$IF/statistics/rx_bytes); sleep 5; r1=$(cat /sys/class/net/$IF/statistics/rx_bytes)
-echo "   link rx now: $(( (r1 - r0) / 5000 )) kB/s"
+
+# Disk usage - cross-platform
+if [ "$OS_TYPE" = "linux" ]; then
+  df -h / /run/media/tobi/aidisc 2>/dev/null | awk 'NR>1{printf "   %-28s %s free (%s used)\n", $6, $4, $5}'
+else
+  # macOS: check common paths
+  df -h / 2>/dev/null | awk 'NR>1{printf "   %-28s %s free (%s used)\n", $9, $4, $5}'
+  df -h /Volumes/aidisc 2>/dev/null | awk 'NR>1{printf "   %-28s %s free (%s used)\n", $9, $4, $5}'
+  df -h /Volumes 2>/dev/null | awk 'NR>1{printf "   %-28s %s free (%s used)\n", $9, $4, $5}'
+fi
+
+# Memory usage - cross-platform
+if [ "$OS_TYPE" = "linux" ]; then
+  free -g | awk '/Mem/{printf "   RAM %sG used of %sG, available %sG\n", $3, $2, $7}'
+  
+  # Network monitoring - Linux specific
+  IF=wlxb44bd62bd203
+  if [ -d "/sys/class/net/$IF" ]; then
+    r0=$(cat /sys/class/net/$IF/statistics/rx_bytes 2>/dev/null || echo 0)
+    sleep 1
+    r1=$(cat /sys/class/net/$IF/statistics/rx_bytes 2>/dev/null || echo 0)
+    if [ "$r0" != "0" ] && [ "$r1" != "0" ]; then
+      echo "   link rx now: $(( (r1 - r0) / 1000 )) kB/s"
+    else
+      echo "   link: network interface not found or inaccessible"
+    fi
+  else
+    echo "   link: network interface $IF not found"
+  fi
+else
+  # macOS memory
+  if command -v vm_stat &>/dev/null; then
+    # macOS: use vm_stat for memory info
+    total_mem=$(sysctl hw.memsize 2>/dev/null | awk '{print $2 / 1e9}')
+    used_mem=$(vm_stat 2>/dev/null | awk '/active/ {print $3}' | head -1)
+    echo "   RAM: ${total_mem:-?}G total, macOS memory info available via vm_stat"
+  else
+    echo "   RAM: vm_stat not available"
+  fi
+  
+  # macOS network
+  if command -v networksetup &>/dev/null; then
+    echo "   link: Use networksetup or ifconfig for network stats on macOS"
+  else
+    echo "   link: network tools not available"
+  fi
+fi
 
 echo "-- queue log (last 10)"
 tail -10 data/country_queue.log 2>/dev/null | sed 's/^/   /'
