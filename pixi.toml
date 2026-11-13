@@ -2,7 +2,7 @@
 name = "earthpv"
 authors = ["ly0n <tobiasaugspurger@gmail.com>"]
 channels = ["conda-forge"]
-platforms = ["linux-64"]
+platforms = ["linux-64", "osx-arm64", "osx-64"]
 
 [dependencies]
 python = "3.11.*"
@@ -35,10 +35,17 @@ skyfield = ">=1.45"
 scikit-learn = ">=1.5"
 
 [feature.ml.pypi-dependencies]
-# GTX 1060 (Pascal, sm_61): CUDA 13 dropped Pascal, so pin cu126 wheels.
-torch = { version = "==2.7.1", index = "https://download.pytorch.org/whl/cu126" }
-torchvision = { version = "==0.22.1", index = "https://download.pytorch.org/whl/cu126" }
+# GTX 1060 (Pascal, sm_61): CUDA 13 dropped Pascal, so pin cu126 wheels for Linux.
 terratorch = ">=1.0"
+
+# Platform-specific torch features
+[feature.ml-linux.pypi-dependencies]
+torch = { version = "==2.7.1+cu126", index = "https://download.pytorch.org/whl/cu126" }
+torchvision = { version = "==0.22.1+cu126", index = "https://download.pytorch.org/whl/cu126" }
+
+[feature.ml-macos.pypi-dependencies]
+torch = ">=2.2.0,<=2.2.2"
+torchvision = ">=0.17.0,<=0.18.1"
 
 # Documentation site (MkDocs Material). Kept out of the default solve so a docs
 # edit never waits on the data-pipeline or torch environments.
@@ -50,7 +57,8 @@ mkdocs-material = ">=9.5"
 
 [environments]
 default = { solve-group = "default" }
-ml = { features = ["ml"], solve-group = "default" }
+ml-linux = { features = ["ml", "ml-linux"], platforms = ["linux-64"], solve-group = "ml-linux" }
+ml-macos = { features = ["ml", "ml-macos"], platforms = ["osx-arm64", "osx-64"], solve-group = "ml-macos" }
 docs = { features = ["docs"], no-default-feature = true }
 
 [tasks]

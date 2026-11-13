@@ -11,10 +11,20 @@
 # Everything here is a tick loop over files and units, so it is safe to kill and relaunch
 # at any time; it re-derives its state from disk. Status: bash scripts/country_queue_status.sh
 #
+# Linux:
 #   systemd-run --user --collect --unit=earthpv-country-queue -p WorkingDirectory="$PWD" \
 #     -p LimitNOFILE=65536:65536 -p MemoryMax=4G bash scripts/run_country_queue.sh
+#
+# macOS:
+#   bash scripts/run_country_queue.sh
+#
 set -uo pipefail
 cd "$(dirname "$0")/.."
+
+# Source macOS compatibility layer
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/macos_compat.sh"
+
 PY=.pixi/envs/default/bin/python
 QMARK=data/country_queue_markers
 LOG=data/country_queue.log
@@ -60,19 +70,26 @@ DISK_MIN_AIDISC_GB=6
 COMPUTE_MAX_FAILS=3
 MAX_COMPUTE_UNITS=2      # two chains may overlap (one training, one on CPU); RAM is 30 GB
 
-unit_active() { systemctl --user is-active --quiet "$1"; }
+# Use cross-platform functions from macos_compat.sh
 built() { find -L "data/composites/$1/composites" -name composite_0.tif 2>/dev/null | wc -l; }
 selected() { grep -aoE "Selected [0-9]+ cells" "data/compose_$1.log" 2>/dev/null | tail -1 | grep -oE "[0-9]+"; }
-free_gb() { df -BG --output=avail "$1" | tail -1 | tr -dc 0-9; }
 field() { echo "$COUNTRIES" | awk -F'|' -v a="$1" -v k="$2" '$1 == a {print $k}'; }
 floor_of() { local v; v=$(field "$1" 5); echo "${v:-$MIN_BUILDINGS}"; }
-vida_ok() { local f="data/vida/$(field "$1" 3).parquet"; [ -s "$f" ] && [ ! -e "$(readlink -f "$f").part" ]; }
+vida_ok() { 
+  local f="data/vida/$(field "$1" 3).parquet"
+  [ -s "$f" ] && [ ! -e "$(realpath "$f").part" ]
+}
 labels_ok() { [ -s "data/labels/$1_overpass_solar.parquet" ]; }
 compose_active() {
-  systemctl --user list-units --type=service --state=active --no-legend 'earthpv-compose-*' 2>/dev/null | grep -q .
+  list_units 'earthpv-compose-*'
 }
 n_compute_active() {
-  systemctl --user list-units --type=service --state=active --no-legend 'earthpv-*-compute.service' 2>/dev/null | wc -l
+  n_units_active 'earthpv-*-compute'
+}
+val_empty() {
+  $PY -c "
+from earthpv.config import Settings
+import sys; sys.exit(0 if not Settings.load().aois['$1'].get('val_tiles') else 1)"
 }
 val_empty() {
   $PY -c "
@@ -81,36 +98,63 @@ import sys; sys.exit(0 if not Settings.load().aois['$1'].get('val_tiles') else 1
 }
 
 launch_labels() {  # full pull (placement needs the VIDA file); cached tiles are reused
-  local aoi=$1 n last
+  local aoi=$1 n last bbox iso3 tiles
   unit_active "earthpv-$aoi-labels" && return 0
   # The fetch-only pass for all four runs as its own unit (scripts/pull_labels_mena_za.sh);
   # never race it on THIS country's tile cache. Once it has logged this country's return
   # code every tile is cached, and the full pull makes no Overpass requests at all.
-  if unit_active earthpv-labels-mena-za && \
+  if unit_active "earthpv-labels-mena-za" && \
      ! grep -q "LABELS\[$aoi\] rc=0" data/labels_mena_za.log 2>/dev/null; then return 0; fi
   n=$(cat "$QMARK/${aoi}_labels_launches" 2>/dev/null || echo 0)
-  last=$(stat -c %Y "$QMARK/${aoi}_labels_launches" 2>/dev/null || echo 0)
+  last=$(stat_file_mtime "$QMARK/${aoi}_labels_launches")
   [ $(( $(date +%s) - last )) -lt 1800 ] && return 0
   [ "$n" -ge 4 ] && return 0
+  
+  # Pre-compute field values
+  bbox=$(field "$aoi" 2)
+  iso3=$(field "$aoi" 3)
+  tiles=$(field "$aoi" 4)
+  
   echo $((n + 1)) > "$QMARK/${aoi}_labels_launches"
   say "launching $aoi labels pull (attempt $((n + 1)))"
-  systemd-run --user --collect --unit="earthpv-$aoi-labels" -p WorkingDirectory="$PWD" \
-    -p MemoryMax=10G bash -c "$PY scripts/overpass_labels_chunked.py --bbox=$(field "$aoi" 2) \
-      --iso3 $(field "$aoi" 3) --name $aoi --tiles $(field "$aoi" 4) --timeout 300 --retries 8 \
-      >> data/${aoi}_labels.log 2>&1" >/dev/null
+  
+  # Use cross-platform service launching
+  if [ "$OS_TYPE" = "linux" ]; then
+    systemd-run --user --collect --unit="earthpv-$aoi-labels" -p WorkingDirectory="$PWD" \
+      -p MemoryMax=10G bash -c "$PY scripts/overpass_labels_chunked.py --bbox=$bbox \
+        --iso3 $iso3 --name $aoi --tiles $tiles --timeout 300 --retries 8 \
+        >> data/${aoi}_labels.log 2>&1" >/dev/null
+  else
+    # macOS: run in background with nohup
+    nohup bash -c "$PY scripts/overpass_labels_chunked.py --bbox=$bbox \
+      --iso3 $iso3 --name $aoi --tiles $tiles --timeout 300 --retries 8 \
+      >> data/${aoi}_labels.log 2>&1" > /dev/null 2>&1 &
+  fi
 }
 
 start_compose() {
-  local aoi=$1
+  local aoi=$1 floor
+  floor=$(floor_of "$aoi")
   say "compose round for $aoi starting at $(built "$aoi") cells"
   echo "$(built "$aoi")" > "$QMARK/${aoi}_round_start"
   find -L "data/composites/$aoi/composites" -name '*.tif.tmp' -delete 2>/dev/null
-  systemd-run --user --collect --unit="earthpv-compose-$aoi" -p WorkingDirectory="$PWD" \
-    -p LimitNOFILE=65536:65536 -p MemoryMax=12G \
-    --setenv=EARTHPV_PC_TIMEOUT_S=$PC_TIMEOUT_S --setenv=EARTHPV_REQUIRE_BOUNDARY=1 \
-    $GDAL_NET_ENV \
-    bash scripts/compose_loop.sh "$aoi" 0 "$(floor_of "$aoi")" $WORKERS 3600 $STALL_S \
-      "--resampling nearest" >/dev/null
+  
+  if [ "$OS_TYPE" = "linux" ]; then
+    systemd-run --user --collect --unit="earthpv-compose-$aoi" -p WorkingDirectory="$PWD" \
+      -p LimitNOFILE=65536:65536 -p MemoryMax=12G \
+      --setenv=EARTHPV_PC_TIMEOUT_S=$PC_TIMEOUT_S --setenv=EARTHPV_REQUIRE_BOUNDARY=1 \
+      $GDAL_NET_ENV \
+      bash scripts/compose_loop.sh "$aoi" 0 "$floor" $WORKERS 3600 $STALL_S \
+        "--resampling nearest" >/dev/null
+  else
+    # macOS: run in background
+    nohup bash -c "
+      export EARTHPV_PC_TIMEOUT_S=$PC_TIMEOUT_S
+      export EARTHPV_REQUIRE_BOUNDARY=1
+      $GDAL_NET_ENV
+      bash scripts/compose_loop.sh '$aoi' 0 '$floor' $WORKERS 3600 $STALL_S \
+        '--resampling nearest'" > /dev/null 2>&1 &
+  fi
 }
 
 finish_round() {  # book-keeping after a compose unit exits (as run_vn_in_queue.sh)
@@ -164,10 +208,19 @@ maybe_compute() {
   fi
   echo $((fails + 1)) > "$QMARK/${aoi}_compute_launches"
   say "launching $aoi compute chain (launch $((fails + 1))/$COMPUTE_MAX_FAILS)"
-  systemd-run --user --collect --unit="earthpv-$aoi-compute" -p WorkingDirectory="$PWD" \
-    -p LimitNOFILE=65536:65536 -p MemoryMax=14G \
-    --setenv=QMARK=$QMARK --setenv=SKIP_DIAGNOSTIC=1 \
-    bash scripts/run_country_compute.sh "$aoi" >/dev/null
+  
+  if [ "$OS_TYPE" = "linux" ]; then
+    systemd-run --user --collect --unit="earthpv-$aoi-compute" -p WorkingDirectory="$PWD" \
+      -p LimitNOFILE=65536:65536 -p MemoryMax=14G \
+      --setenv=QMARK=$QMARK --setenv=SKIP_DIAGNOSTIC=1 \
+      bash scripts/run_country_compute.sh "$aoi" >/dev/null
+  else
+    # macOS: run in background
+    nohup bash -c "
+      export QMARK=$QMARK
+      export SKIP_DIAGNOSTIC=1
+      bash scripts/run_country_compute.sh '$aoi'" > /dev/null 2>&1 &
+  fi
 }
 
 say "queue start (pid $$): $(echo $AOIS)"
@@ -187,10 +240,21 @@ while true; do
   done
 
   # ---- disk guard -----------------------------------------------------------------------
-  hf=$(free_gb /); af=$(free_gb /run/media/tobi/aidisc)
+  hf=$(free_gb /)
+  # Check for macOS-specific aidisc path or use a fallback
+  if [ "$OS_TYPE" = "linux" ]; then
+    af=$(free_gb /run/media/tobi/aidisc 2>/dev/null || echo "$DISK_MIN_AIDISC_GB")
+  else
+    # On macOS, check common external drive paths
+    af=$(free_gb /Volumes/aidisc 2>/dev/null || free_gb /Volumes 2>/dev/null || echo "$DISK_MIN_AIDISC_GB")
+  fi
   if [ "$hf" -lt "$DISK_MIN_HOME_GB" ] || [ "$af" -lt "$DISK_MIN_AIDISC_GB" ]; then
     say "DISK GUARD: / ${hf}G free, aidisc ${af}G free -- stopping compose until space returns"
-    for a in $AOIS; do unit_active "earthpv-compose-$a" && systemctl --user stop "earthpv-compose-$a"; done
+    for a in $AOIS; do
+      if unit_active "earthpv-compose-$a"; then
+        stop_unit "earthpv-compose-$a"
+      fi
+    done
     sleep 1800; continue
   fi
 
