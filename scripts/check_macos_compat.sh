@@ -72,6 +72,8 @@ echo "-------------------------------------------"
 check_command "bash" "Bash shell"|| true
 check_command "python3" "Python 3"|| true
 check_command "pip" "Pip package manager"|| true
+check_command "proj" "proj command (used for 'pixi install' - install with homebrew)"|| true
+check_command "gdal" "gdal command (used for 'pixi install' - install with homebrew)"|| true
 check_command "stat" "stat command"|| true
 check_command "df" "df command"|| true
 check_command "nohup" "nohup command"|| true
