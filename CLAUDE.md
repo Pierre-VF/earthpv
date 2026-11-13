@@ -159,7 +159,7 @@ promoted; the rest are in `docs/experiments.md`.
 
 Managed with **pixi**. Two environments share one solve-group, plus an independent docs env:
 - `default` -- the data pipeline (DuckDB, geopandas, rasterio, odc-stac). No PyTorch.
-- `ml` -- adds `torch`/`torchvision` (**cu126 wheels**) and `terratorch`.
+- `ml` -- adds `torch`/`torchvision` (**cu126 wheels** on Linux, MPS on macOS) and `terratorch`.
 - `docs` -- mkdocs-material only (`no-default-feature`), so a docs edit never waits on a solve.
 
 ```bash
@@ -1524,7 +1524,8 @@ MWp until it was linked in, 2026-11-07).
 ## Conventions & gotchas
 
 - **GPU:** the target card is a **GTX 1060 (Pascal, sm_61)** → PyTorch must be **cu126** wheels
-  (CUDA 13 dropped Pascal). Pinned in `pixi.toml`.
+  (CUDA 13 dropped Pascal). Pinned in `pixi.toml`. On macOS with Apple Silicon, PyTorch uses
+  MPS acceleration instead of CUDA.
 - **`data/` is gitignored** and lives on the external drive
   (`/run/media/tobi/aidisc/earthpv/data/`): `chips/`, `composites/`, `models/`, `predictions/`.
   Files there are invisible to git/IDE explorers that hide ignored files.

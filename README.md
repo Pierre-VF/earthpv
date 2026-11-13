@@ -135,8 +135,8 @@ The segmentation model is published as a
 [GitHub release](https://github.com/open-energy-transition/earthpv/releases/tag/segmentation-model-v28-2026-11-12):
 a ResNet-50 (pretrained on SSL4EO-S12) fine-tuned on OpenStreetMap solar labels from Germany,
 Pakistan, India, France and South Africa, 139 MB, and of eight checkpoints the one that found
-the most arrays in ten countries none was trained on. You need Linux and an NVIDIA GPU; a 6 GB
-GTX 1060 is enough.
+the most arrays in ten countries none was trained on. You need Linux and an NVIDIA GPU (a 6 GB
+GTX 1060 is enough), or macOS with Apple Silicon (MPS acceleration).
 
 ```bash
 git clone https://github.com/open-energy-transition/earthpv.git && cd earthpv
